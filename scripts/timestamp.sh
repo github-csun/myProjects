@@ -16,4 +16,3 @@ do
   echo "line ${count}" | addTimeStamp
   sleep 1
 done
-
