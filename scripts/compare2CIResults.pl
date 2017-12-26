@@ -89,7 +89,6 @@ sub trim($)
 	return $string;
 }
 
-
 sub printHashTable { 
 	my $hashRef = shift;
 	my %subHash = %{$hashRef};
@@ -98,8 +97,3 @@ sub printHashTable {
 		print "$key ==> $value \n";
 	}
 }
-
-
-
-
-
