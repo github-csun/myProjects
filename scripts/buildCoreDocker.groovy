@@ -5,7 +5,10 @@ pipeline {
         label 'master'
     }
     options {
-        buildDiscarder(logRotator(numToKeepStr: '30'))
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        skipStagesAfterUnstable()
+        timeout(time: 1, unit: 'HOURS')
+        timestamps()
     }
     parameters {
         string(
@@ -127,7 +130,6 @@ pipeline {
                 script {
                     sh '''
                         unzip -q ${WORKSPACE}/webapp/dist/${APP_NAME}.war -d ${DOCKER_DIR}/catalina/${APP_NAME}
-                        cp ${catalinaHome}/conf/Catalina/localhost/${APP_NAME}.xml ${DOCKER_DIR}/catalina/
                     '''
                 }
             }
@@ -137,14 +139,15 @@ pipeline {
                 script {
                     dir ("${env.WORKSPACE}/pipelines/docker/mysql") {
                         sh returnStatus: true, returnStdout: false, script: '''
-                            sed -i "s/DB_NAME/${APP_NAME}/g zg_shard_configuration.sql"
-                            sed -i "s/SHARD_HOST/${MYSQL_CONTAINER_NAME}/g zg_shard_configuration.sql"
+                            sed -i "s/DB_NAME/${APP_NAME}/g" zg_shard_configuration.sql
+                            sed -i "s/SHARD_HOST/${MYSQL_CONTAINER_NAME}/g" zg_shard_configuration.sql
                         '''
                         sh returnStatus: true, returnStdout: false, script: '''
                             docker stop ${MYSQL_CONTAINER_NAME} 2>1 > /dev/null || true
                             docker rm ${MYSQL_CONTAINER_NAME} 2>1 > /dev/null || true
                             docker run -d -i \
                                 --name ${MYSQL_CONTAINER_NAME} \
+                                --hostname ${MYSQL_CONTAINER_NAME} \
                                 -p 3306:3306 \
                                 -v ${WORKSPACE}/database:/database \
                                 -v ${WORKSPACE}/pipelines/docker/mysql/conf.d:/etc/mysql/conf.d \
@@ -169,11 +172,11 @@ pipeline {
                 }
             }
         }
-        stage ('publish database docker image') {
+        stage ('publish docker image') {
             steps {
                 script {
                     publishDockerImage("ocm/core", "${DOCKER_DIR}/mysql", "database", 'us-west-2', '122972921717')
-                    publishDockerImage("ocm/core", "${DOCKER_DIR}/webapp", "webapp", 'us-west-2', '122972921717')
+                    publishDockerImage("ocm/core", "${DOCKER_DIR}/catalina", "webapp", 'us-west-2', '122972921717')
                 }
             }
         }
@@ -202,32 +205,25 @@ def updateProperty(String file, String key, String value) {
 
 def publishDockerImage(String awsRepoName, String dockerFilePath, String imageType, String region, String account) {
 
+    def props = readProperties file: "${WORKSPACE}/webapp/build/build.properties.template"
+    RELEASE = props['release']
+
     dir("${WORKSPACE}/${imageType}") {
         COMMIT_ID = sh(returnStdout: true, script: 'git rev-parse HEAD').trim().take(7)
     }
 
     IMAGE_NAME = "${awsRepoName}"
-    IMAGE_TAG = "ocm-core-${imageType}.${COMMIT_ID}"
+    IMAGE_TAG = "ocm-core-${imageType}.${RELEASE}"
 
-    dir("${WORKSPACE}/${dockerFilePath}") {
-        IMAGE = docker.build("${IMAGE_NAME}:${IMAGE_TAG}", "-f ./Dockerfile .")
+    dir("${dockerFilePath}") {
+        IMAGE = docker.build("${IMAGE_NAME}:${IMAGE_TAG}.${COMMIT_ID}", "-f ./Dockerfile .")
     
         withAWS(role: 'jenkinsfarm-cross-account', roleAccount: "${account}") {
             sh "eval \$(aws ecr get-login --region ${region} --no-include-email)"
             docker.withRegistry("https://${account}.dkr.ecr.${region}.amazonaws.com") {
                 IMAGE.push()
-                IMAGE.push('latest')
+                IMAGE.push("${IMAGE_TAG}.latest")
             }
-        }
-    }
-}
-
-def pushDockerImage(String region, String account) {
-    withAWS(role: 'jenkinsfarm-cross-account', roleAccount: "${account}") {
-        sh "eval \$(aws ecr get-login --region ${region} --no-include-email)"
-        docker.withRegistry("https://${account}.dkr.ecr.${region}.amazonaws.com") {
-            IMAGE.push()
-            IMAGE.push('latest')
         }
     }
 }
